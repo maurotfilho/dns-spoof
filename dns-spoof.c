@@ -110,9 +110,27 @@ void parse_args(int argc, char *argv[], SpoofParams *spoof_params){
 }
 
 /**
- * Extracts DNS query from packet
+ * Extracts the src ip from a ip header
  */
-void extract_dns_query(const u_char *packet, struct dns_query *dns){
+void extract_ip_from_iphdr(struct iphdr* ip, char* request_ip){
+  
+  int i;
+  int aux[4];
+  u_int32_t raw_ip;
+  
+  raw_ip = ip->saddr;
+  for(i=0;i<4;i++){
+    aux[i] = (raw_ip >> (i*8)) & 0xff;
+  }
+  
+  sprintf(request_ip, "%d.%d.%d.%d",aux[0], aux[1], aux[2], aux[3]);
+  
+}
+
+/**
+ * Extracts DNS query and ip from packet
+ */
+void extract_dns_data(const u_char *packet, struct dns_query *dns, char* request_ip){
   struct etherhdr *ether;
   struct iphdr *ip;
   struct udphdr *udp;
@@ -124,6 +142,7 @@ void extract_dns_query(const u_char *packet, struct dns_query *dns){
 
   /* ip header */
   ip = (struct iphdr*)(((char*) ether) + sizeof(struct etherhdr));
+  extract_ip_from_iphdr(ip, request_ip);
 
   /* udp header */
   ip_header_size = ip->ihl*4;
@@ -137,7 +156,7 @@ void extract_dns_query(const u_char *packet, struct dns_query *dns){
 }
 
 /**
- * 
+ * Extracts the request from a dns query
  */
 void extract_dns_request(struct dns_query *dns, char *request){
   unsigned int i, j, k;
@@ -161,21 +180,30 @@ void extract_dns_request(struct dns_query *dns, char *request){
 }
 
 /**
+ * Prints a terminal message with host IP and request
+ */
+void print_message(char* request, char* ip){
+  printf("O host %s fez uma requisição a %s\n", ip, request);
+}
+
+/**
  * Callback function to handle packets
  */
 void handle_packet(u_char *args, const struct pcap_pkthdr *header, const u_char *packet){
   SpoofParams *spoof_params;
   struct dns_query dns;
   char request[REQUEST_SIZE];
+  char ip[IP_SIZE];
   
   spoof_params = (SpoofParams*)args;
   
-  extract_dns_query(packet, &dns);
+  extract_dns_data(packet, &dns, ip);
   extract_dns_request(&dns, request);
   
-  if(!strcmp(request, spoof_params->request)) 
+  if(!strcmp(request, spoof_params->request)){
     //build_dns_answer(spoof_params, mais parametros aqui - ip );
-    printf("request para '%s'\n",request);
+    print_message(request, ip);
+  }
 }
 
 /**
