@@ -170,8 +170,6 @@ void handle_packet(u_char *args, const struct pcap_pkthdr *header, const u_char 
   
   spoof_params = (SpoofParams*)args;
   
-  //falta verificar se eh requisicao ou resposta
-  
   extract_dns_query(packet, &dns);
   extract_dns_request(&dns, request);
   
@@ -210,7 +208,7 @@ void run_filter(SpoofParams *spoof_params){
   }
   
   /* only DNS */
-  sprintf(filter, "udp and port 53");
+  sprintf(filter, "udp and dst port domain");
   
   /* compiles the filter expression */
   if(pcap_compile(handle, &fp, filter, 0, 0) == -1){
