@@ -202,11 +202,11 @@ void send_dns_answer(char* ip, u_int32_t port, char* packet, int packlen) {
   }
   to_addr.sin_family = AF_INET;
   to_addr.sin_port = htons(port);
-  printf("port %d\n",port);
   to_addr.sin_addr.s_addr = inet_addr(ip);
-  printf("ip %s\n",ip);
+  
   bytes_sent = sendto(sock, packet, packlen, 0, (struct sockaddr *)&to_addr, sizeof(to_addr));
-  printf("bytes_sent: %d\n", bytes_sent);
+  if(bytes_sent < 0)
+    printf("Erro ao enviar os dados");
 }
 
 /**
@@ -216,16 +216,12 @@ unsigned int build_dns_answer(SpoofParams *spoof_params, struct dnshdr *dns_hdr,
   
   unsigned int size = 0; /* answer size */
   struct dnsquery *dns_query;
-  in_addr_t inet_ip;
-  
   unsigned char ans[4];
+  
   sscanf(spoof_params->ip, "%d.%d.%d.%d",(int *)&ans[0],(int *)&ans[1], (int *)&ans[2], (int *)&ans[3]);
   
   dns_query = (struct dnsquery*)(((char*) dns_hdr) + sizeof(struct dnshdr));
-  inet_ip = inet_addr(spoof_params->ip);
   
-  printf("  ans  - %u%u%u%u\n", ans[0], ans[1], ans[2], ans[3]);
-  printf("  inet - %u\n", inet_ip);
   //dns_hdr
   memcpy(&answer[0], dns_hdr->id, 2); //id
   memcpy(&answer[2], "\x81\x80", 2); //flags
